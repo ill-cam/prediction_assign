@@ -1,0 +1,127 @@
+---
+title: "Lifting Style Prediction Assignment"
+author: "ill-cam"
+date: "December 18, 2016"
+output: html_document
+---
+
+## Introduction
+
+The goal of this analysis is to use data from accelerometers placed on the belt, forearm, arm, and dumbell of six participants performing a certain exercise (lifting a dumbbell) to try to predict the manner in which the exercise was performed among five different performance styles.
+
+##The Data
+
+The data are provided courtesy of Ugulino et al.
+
+In the study, six participants performed one set of ten repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+The data have already been split into a training and validation data set and we have split the training data set further in order to have another test data set so we can create a higher level model that combines the predictions of several models created in our first round of training.
+
+
+```{r}
+##Read the data into frames
+pretraining <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+validation <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+
+The training data set, which we store in a data frame called "pretraining," has 19,622 rows of data and 160 variables including the variable we are trying to develop a prediction model for--"classe." The validation data set has 20 rows of data and 160 variables.
+
+After looking at a summary of the pretraining data frame, we notice a lot of variables with missing or NA values. If we kept these variables in the data frame, we would lose the majority of our data when creating models since the models cannot process NA values. By removing all of the variables with missing and NA values, we are able to greatly improve the accuracy of our models. Furthermore, the variables we have removed are all statistically derived from the sensor measurements (e.g., minimum measurement value, kertosis of measurement values, standard deviation of measurement values) rather than being sensor measurements themselves.
+
+We also perform some preprocessing of the data to reduce the number of predictors to as few as possible (by running a principal components analysis) and to try to normalize the measurement values as much as possible (by applying a "BoxCox" transformation).
+
+```{r}
+library(caret)
+pretraining <- pretraining[,-c(12:36,50:59,69:83,87:101,103:112,125:139,141:150)]
+pretraining$classe <- factor(as.character(pretraining$classe))
+preObj <- preProcess(pretraining,method=c("pca","BoxCox"))
+pretraining1 <- predict(preObj,pretraining)
+validation <- validation[,-c(12:36,50:59,69:83,87:101,103:112,125:139,141:150)]
+validation1 <- predict(preObj,validation)
+```
+
+Again, because we want to be able to create an aggregate model that combines various models in order to improve prediction, we need to carve a test data set out of the training data set so we can preserve the validation data set for our final out of sample error estimate.
+
+```{r}
+inTrain <- createDataPartition(y=pretraining1$classe,p=0.7,list=FALSE)
+training <- pretraining1[inTrain,] 
+test <- pretraining1[-inTrain,]
+```
+
+Lastly, we remove variables with near zero variation as possible predictors. In our training and test data sets, only one variable ended up being removed.
+
+```{r}
+nsv <- nearZeroVar(training)
+training1 <- training[,-nsv]
+test1 <- test[,-nsv]
+```
+
+##Model Creation
+
+In our first round of modeling, we ended up creating three different models--a generalized boosted model (gbm), a linear discriminant analysis (lda) model, and a Naive Bayes (nb) model. In all cases, we enable cross validation within the train function.
+
+We attempted to run a random forest model but the computation was prohibitively time consuming. We also could not create a generalized linear model since we are attempting to predict a factor variable with five levels.
+
+```{r, warning=FALSE, error=FALSE}
+##Load the packages needed to run the analyses
+library(klaR)
+library(glmnet)
+library(mgcv)
+library(nlme)
+##create models
+set.seed(642819)
+model1 <- train(classe ~ ., data=training1, method="gbm",verbose=FALSE,trControl=trainControl(method="cv"),na.action=na.exclude)
+predict1 <- predict(model1,test1)
+set.seed(465829)
+model2 <- train(classe ~ ., data=training1, method="lda",trControl=trainControl(method="cv"),na.action=na.exclude)
+predict2 <- predict(model2,test1)
+set.seed(192874)
+model3 <- train(classe ~ ., data=training1, method="nb",trControl=trainControl(method="cv"),na.action=na.exclude)
+predict3 <- predict(model3,test1)
+```
+
+After creating these three models and creating predicted values for the test data set, we created a generalized additive model combining the three models.
+
+```{r, warning=FALSE, error=FALSE}
+##Create combined model
+predDF <- data.frame(predict1,predict2,predict3,classe=test$classe)
+combModFit <- train(classe~.,method="gam",data=predDF)
+predict4 <- predict(combModFit,test1)
+predict1V <- predict(model1,validation1)
+predict2V <- predict(model2,validation1)
+predict3V <- predict(model3,validation1)
+predVDF <- data.frame(predict1=predict1V,predict2=predict2V,predict3=predict3V)
+combPredV <- predict(combModFit,predVDF)
+```
+
+##Model Accuracy
+
+Model 1, our gbm model, does quite well, with a maximum accuracy level of 95%.The final model relies on 29 predictors.
+
+```{r, echo=FALSE}
+confusionMatrix(predict1,test1$classe)
+```
+
+Model 2, our lda model, also does quite well, with a maximum accuracy level of 97%. The final model relies on 29 predictors.
+
+```{r, echo=FALSE}
+confusionMatrix(predict2,test1$classe)
+```
+
+Model 3, our Naive Bayes model, is not as good, with an accuracy level of 60%. The final model relies on 29 predictors.
+
+```{r, echo=FALSE}
+confusionMatrix(predict3,test1$classe)
+```
+
+The combined (aggregate) model actually has the worst accuracy, with an accuracy level of about 47%. The final model relies on only three predictors.
+
+```{r, echo=FALSE}
+confusionMatrix(predict4,test1$classe)
+```
+
+Models 1 and 2 each seem suitable for predicting the classe value in the validation data set. Surprisingly and unfortunately however, when we compare our predicted values for the validation data set against the actual values, our prediction was correct only about 55% percent of the time (out of sample prediction accuracy). The predicted values resulting from our Model 2 when applied to the validation data set are shown below. The lower accuracy of the out of sample prediction in comparison with the accuracy of the model in predicted the test values may be due to the very small size of the validation data set.
+
+```{r, echo=FALSE}
+predict2V
+```
